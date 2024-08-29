@@ -1,13 +1,17 @@
 ﻿using System;
-using System.IO;
 using System.Management;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
+using TextCopy;
 
 namespace HWIDFetcher
 {
     class Program
     {
+        static bool hasBeenPasted = false;
+        static Timer timer;
+
         static void Main(string[] args)
         {
             // Retrieve HWIDs
@@ -18,16 +22,24 @@ namespace HWIDFetcher
             // Concatenate HWIDs
             string hwid = $"{cpuId}-{diskId}-{macAddress}";
 
-            // Generate a random salt
-            string salt = GenerateSalt();
+            // Generate a deterministic salt based on HWID
+            string salt = GenerateDeterministicSalt(hwid);
 
-            // Hash the HWID with the salt
+            // Hash the HWID with the deterministic salt
             string hashedHwid = HashWithSalt(hwid, salt);
 
-            // Save to a .txt file
-            SaveToFile("hwid.txt", hashedHwid);
+            // Copy the hashed HWID to the clipboard
+            ClipboardService.SetText(hashedHwid);
 
-            Console.WriteLine("HWID has been generated and saved to hwid.txt.");
+            Console.WriteLine("HWID has been copied to the clipboard. You have 5 seconds to paste it.");
+
+            // Start the timer
+            timer = new Timer(TerminateProgram, null, 5000, Timeout.Infinite);
+
+            // Start monitoring the clipboard in a separate thread
+            Thread clipboardThread = new Thread(() => MonitorClipboard(hashedHwid));
+            clipboardThread.SetApartmentState(ApartmentState.STA); // Set thread to single-threaded apartment state
+            clipboardThread.Start();
         }
 
         // Get CPU ID
@@ -69,15 +81,15 @@ namespace HWIDFetcher
             return macAddress;
         }
 
-        // Generate Salt
-        static string GenerateSalt()
+        // Generate a deterministic salt based on the HWID
+        static string GenerateDeterministicSalt(string hwid)
         {
-            byte[] saltBytes = new byte[16];
-            using (var rng = new RNGCryptoServiceProvider())
+            using (var sha256 = SHA256.Create())
             {
-                rng.GetBytes(saltBytes);
+                byte[] hwidBytes = Encoding.UTF8.GetBytes(hwid);
+                byte[] saltBytes = sha256.ComputeHash(hwidBytes);
+                return Convert.ToBase64String(saltBytes);
             }
-            return Convert.ToBase64String(saltBytes);
         }
 
         // Hash with Salt
@@ -91,10 +103,46 @@ namespace HWIDFetcher
             }
         }
 
-        // Save to File
-        static void SaveToFile(string fileName, string content)
+        // Monitor the clipboard and clear it after the first paste
+        static void MonitorClipboard(string expectedText)
         {
-            File.WriteAllText(fileName, content);
+            string lastClipboardText = ClipboardService.GetText();
+
+            while (!hasBeenPasted)
+            {
+                string currentClipboardText = ClipboardService.GetText();
+
+                if (currentClipboardText != lastClipboardText)
+                {
+                    hasBeenPasted = true;
+                    ClearClipboard();
+                    Console.WriteLine("Clipboard has been cleared after the first paste.");
+                    TerminateProgram(null);  // Terminate immediately after pasting
+                }
+
+                Thread.Sleep(100); // Check every 100ms
+            }
+        }
+
+        // Clear the clipboard and overwrite with dummy data
+        static void ClearClipboard()
+        {
+            ClipboardService.SetText(string.Empty); // First clear
+            Thread.Sleep(50); // Wait a bit
+            ClipboardService.SetText("cleared"); // Overwrite with dummy data
+            Thread.Sleep(50); // Wait a bit more
+            ClipboardService.SetText(string.Empty); // Clear again
+        }
+
+        // Terminate the program after 20 seconds
+        static void TerminateProgram(object state)
+        {
+            if (!hasBeenPasted)
+            {
+                ClearClipboard(); // Ensure clipboard is cleared
+                Console.WriteLine("Time's up! The program will now terminate, and the clipboard has been cleared.");
+            }
+            Environment.Exit(0);
         }
     }
 }
